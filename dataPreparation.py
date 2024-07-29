@@ -1,0 +1,171 @@
+from model import *
+
+import numpy as np
+import torch
+import pandas as pd
+
+emb_size = 224
+text_embeddings = 60
+
+from sklearn.model_selection import train_test_split
+
+text_train, text_test, img_path_train, img_path_test, violent_train, violent_test, real_train, real_test, sentiment_train, sentiment_test = train_test_split(text, img_path, violent_label, real_label, sentiment_label, test_size=0.2, random_state=42)
+text_train, text_val, img_path_train, img_path_val, violent_train, violent_val, real_train, real_val, sentiment_train, sentiment_val = train_test_split(text_train, img_path_train, violent_train, real_train, sentiment_train, test_size=0.2, random_state=42)
+
+from keras.preprocessing.text import Tokenizer
+import matplotlib.pyplot as plt
+import nltk
+from string import punctuation
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import sent_tokenize
+from nltk import WordPunctTokenizer
+
+import nltk
+nltk.download('punkt')
+nltk.download('wordnet')
+nltk.download('stopwords')
+en_stop = set(nltk.corpus.stopwords.words('english'))
+
+import re
+
+stemmer = WordNetLemmatizer()
+
+def preprocess_text(document):
+  document = re.sub(r'\W', ' ', str(document))
+  document = re.sub(r'\^[a-zA-Z]\s+', ' ', document)
+  document = re.sub(r'\s+', ' ', document, flags=re.I)
+  document = re.sub(r'^b\s+', '', document)
+
+  document = document.lower()
+
+  tokens = document.split()
+  tokens = [stemmer.lemmatize(word) for word in tokens]
+  tokens = [word for word in tokens if word not in en_stop]
+  tokens = [word for word in tokens if len(word) > 3]
+
+  preprocessed_text = ' '.join(tokens)
+  return preprocessed_text 
+
+final_corpus = [preprocess_text(sentence) for sentence in text_train if sentence.strip() != '']
+corpus_train = [preprocess_text(sentence) for sentence in text_train if sentence.strip() != '']
+corpus_val = [preprocess_text(sentence) for sentence in text_val if sentence.strip() != '']
+corpus_test = [preprocess_text(sentence) for sentence in text_test if sentence.strip() != '']
+
+word_punctuation_tokenizer = nltk.WordPunctTokenizer()
+word_tokenized_corpus = [word_punctuation_tokenizer.tokenize(sent) for sent in final_corpus]
+
+ft_model = ft_train(word_tokenized_corpus)
+
+def embed_sentence(text):
+
+    words = text.split()
+    words = words[:60]
+    word_vectors = [ft_model.wv[word] for word in words]
+
+    if word_vectors:
+        text_embedding = np.array(word_vectors)
+        vectors = text_embedding.shape[0]
+        text_embedding = np.concatenate([text_embedding, np.zeros((text_embeddings-vectors, emb_size))])
+        return text_embedding
+    else:
+        return np.zeros((text_embeddings, emb_size))
+    
+import torch
+import numpy as np
+
+def text_preprocessing(text):
+    g_input = []
+
+    for line in text:
+        input = embed_sentence(line)
+        input = input.astype(float)
+        input = input.reshape(-1, emb_size)
+
+        g_input.append(input)
+
+    g_input = np.array(g_input)
+    g_input = torch.tensor(g_input)
+    return g_input
+
+input_train = text_preprocessing(corpus_train)
+input_val = text_preprocessing(corpus_val)
+input_test = text_preprocessing(corpus_test)
+
+
+import numpy as np
+from PIL import Image, ImageFile, ImageOps
+import os
+import torch
+import tensorly as tl
+import cv2
+from tensorly.decomposition import tucker, parafac
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split, SubsetRandomSampler, ConcatDataset
+from torch import nn
+import torch.optim as optim
+import copy
+from sklearn.model_selection import KFold
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+torch.set_num_threads(1)
+
+def compute_prnu(image, n=3):
+    # Compute the noise residual pattern of the image
+    noise = np.zeros_like(image, dtype=np.float32)
+    for i in range(n):
+        for j in range(n):
+            noise += (image - cv2.GaussianBlur(image, (n,n), n/5))**2
+    noise = np.sqrt(noise / (n*n))
+
+    # Compute the PRNU by normalizing the noise residual pattern
+    prnu = noise / (np.mean(noise) + 1e-10)
+    return prnu
+
+def readImage(imagePath):
+  image = Image.open(imagePath)
+  image = image.resize((256,256))
+  image2 = np.array(image.convert("YCbCr"))[:,:,0]
+  
+  prnu = compute_prnu(image2)
+  prnu = torch.tensor(prnu)
+  
+  result = torch.stack([prnu], 0)
+  return result
+
+class dataset_creation():
+
+  def __init__(self, text_embeds, img_path, violent_label, real_label, sentiment_label):
+    self.text_embeds = text_embeds
+    self.img_path = img_path
+    self.violent_label = violent_label
+    self.real_label = real_label
+    self.sentiment_label = sentiment_label
+
+  def __len__(self):
+    return len(self.img_path)
+
+  def __getitem__(self, idx):
+    if torch.is_tensor(idx):
+      idx = idx.tolist()
+
+    sample = {
+        "text_embeds" : torch.tensor(self.text_embeds[idx]).float(),
+        "images_x" : torch.tensor(readImage(self.img_path[idx])).float(),
+        "violent_label" : torch.tensor(self.violent_label[idx]).long(),
+        "real_label" : torch.tensor(self.real_label[idx]).long(),
+        "sentiment_label" : torch.tensor(self.sentiment_label[idx]).long()
+    }
+
+    return sample
+  
+train_dataset = dataset_creation(input_train, img_path_train, violent_train, real_train, sentiment_train)
+val_dataset = dataset_creation(input_val, img_path_val, violent_val, real_val, sentiment_val)
+test_dataset = dataset_creation(input_test, img_path_test, violent_test, real_test, sentiment_test)
+
+from torch.utils.data import DataLoader
+
+batch_size = 32
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
