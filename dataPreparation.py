@@ -48,9 +48,6 @@ def preprocess_text(document):
   return preprocessed_text 
 
 final_corpus = [preprocess_text(sentence) for sentence in text_train if sentence.strip() != '']
-corpus_train = [preprocess_text(sentence) for sentence in text_train if sentence.strip() != '']
-corpus_val = [preprocess_text(sentence) for sentence in text_val if sentence.strip() != '']
-corpus_test = [preprocess_text(sentence) for sentence in text_test if sentence.strip() != '']
 
 word_punctuation_tokenizer = nltk.WordPunctTokenizer()
 word_tokenized_corpus = [word_punctuation_tokenizer.tokenize(sent) for sent in final_corpus]
@@ -85,13 +82,16 @@ def text_preprocessing(text):
         g_input.append(input)
 
     g_input = np.array(g_input)
+
     g_input = torch.tensor(g_input)
+
     return g_input
 
-input_train = text_preprocessing(corpus_train)
-input_val = text_preprocessing(corpus_val)
-input_test = text_preprocessing(corpus_test)
-
+def getEmbeds(text):
+    text = preprocess_text(text)
+    embed = embed_sentence(text)
+    embed = embed.astype(float)
+    return torch.tensor(embed)
 
 import numpy as np
 from PIL import Image, ImageFile, ImageOps
@@ -110,12 +110,22 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 torch.set_num_threads(1)
 
 def compute_prnu(image, n=3):
-    # Compute the noise residual pattern of the image
-    noise = np.zeros_like(image, dtype=np.float32)
-    for i in range(n):
-        for j in range(n):
-            noise += (image - cv2.GaussianBlur(image, (n,n), n/5))**2
-    noise = np.sqrt(noise / (n*n))
+    blur_kernel_size = (n, n)
+    blur_sigma = n / 5
+
+    blurred_image = cv2.GaussianBlur(image, blur_kernel_size, blur_sigma)
+
+    noise = (image - blurred_image) ** 2
+    noise_sum = np.zeros_like(image, dtype=np.float32)
+
+    for _ in range(n * n):
+        noise_sum += noise
+
+    noise_sum = np.sqrt(noise_sum / (n*n))
+
+    # Compute the PRNU by normalizing the noise_sum residual pattern
+    prnu = noise_sum / (np.mean(noise_sum) + 1e-10)
+    return prnu
 
     # Compute the PRNU by normalizing the noise residual pattern
     prnu = noise / (np.mean(noise) + 1e-10)
@@ -134,8 +144,8 @@ def readImage(imagePath):
 
 class dataset_creation():
 
-  def __init__(self, text_embeds, img_path, violent_label, real_label, sentiment_label):
-    self.text_embeds = text_embeds
+  def __init__(self, text, img_path, violent_label, real_label, sentiment_label):
+    self.text = text
     self.img_path = img_path
     self.violent_label = violent_label
     self.real_label = real_label
@@ -149,18 +159,18 @@ class dataset_creation():
       idx = idx.tolist()
 
     sample = {
-        "text_embeds" : torch.tensor(self.text_embeds[idx]).float(),
-        "images_x" : torch.tensor(readImage(self.img_path[idx])).float(),
-        "violent_label" : torch.tensor(self.violent_label[idx]).long(),
-        "real_label" : torch.tensor(self.real_label[idx]).long(),
-        "sentiment_label" : torch.tensor(self.sentiment_label[idx]).long()
+        "text_embeds" : torch.tensor(getEmbeds(self.text[idx])).float().to(device),
+        "images_x" : torch.tensor(readImage(self.img_path[idx])).float().to(device),
+        "violent_label" : torch.tensor(self.violent_label[idx]).long().to(device),
+        "real_label" : torch.tensor(self.real_label[idx]).long().to(device),
+        "sentiment_label" : torch.tensor(self.sentiment_label[idx]).long().to(device)
     }
 
     return sample
   
-train_dataset = dataset_creation(input_train, img_path_train, violent_train, real_train, sentiment_train)
-val_dataset = dataset_creation(input_val, img_path_val, violent_val, real_val, sentiment_val)
-test_dataset = dataset_creation(input_test, img_path_test, violent_test, real_test, sentiment_test)
+train_dataset = dataset_creation(text_train, img_path_train, violent_train, real_train, sentiment_train)
+val_dataset = dataset_creation(text_val, img_path_val, violent_val, real_val, sentiment_val)
+test_dataset = dataset_creation(text_test, img_path_test, violent_test, real_test, sentiment_test)
 
 from torch.utils.data import DataLoader
 
