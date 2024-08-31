@@ -1,3 +1,20 @@
+import pandas as pd
+
+df = pd.read_csv('./entire_dataset.csv')
+
+text = []
+img_path = []
+violent_label = []
+real_label = []
+sentiment_label = []
+
+for i in range(len(df)):
+  text.append(df['text'][i])
+  img_path.append(df['img_path'][i])
+  violent_label.append(int(df['violent_label'][i]))
+  real_label.append(int(df['real_label'][i]))
+  sentiment_label.append(int(df['sentiment_label'][i]))
+
 from model import *
 
 import numpy as np
@@ -71,22 +88,6 @@ def embed_sentence(text):
 import torch
 import numpy as np
 
-def text_preprocessing(text):
-    g_input = []
-
-    for line in text:
-        input = embed_sentence(line)
-        input = input.astype(float)
-        input = input.reshape(-1, emb_size)
-
-        g_input.append(input)
-
-    g_input = np.array(g_input)
-
-    g_input = torch.tensor(g_input)
-
-    return g_input
-
 def getEmbeds(text):
     text = preprocess_text(text)
     embed = embed_sentence(text)
@@ -110,22 +111,12 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 torch.set_num_threads(1)
 
 def compute_prnu(image, n=3):
-    blur_kernel_size = (n, n)
-    blur_sigma = n / 5
-
-    blurred_image = cv2.GaussianBlur(image, blur_kernel_size, blur_sigma)
-
-    noise = (image - blurred_image) ** 2
-    noise_sum = np.zeros_like(image, dtype=np.float32)
-
-    for _ in range(n * n):
-        noise_sum += noise
-
-    noise_sum = np.sqrt(noise_sum / (n*n))
-
-    # Compute the PRNU by normalizing the noise_sum residual pattern
-    prnu = noise_sum / (np.mean(noise_sum) + 1e-10)
-    return prnu
+    # Compute the noise residual pattern of the image
+    noise = np.zeros_like(image, dtype=np.float32)
+    for i in range(n):
+        for j in range(n):
+            noise += (image - cv2.GaussianBlur(image, (n,n), n/5))**2
+    noise = np.sqrt(noise / (n*n))
 
     # Compute the PRNU by normalizing the noise residual pattern
     prnu = noise / (np.mean(noise) + 1e-10)
@@ -159,11 +150,11 @@ class dataset_creation():
       idx = idx.tolist()
 
     sample = {
-        "text_embeds" : torch.tensor(getEmbeds(self.text[idx])).float().to(device),
-        "images_x" : torch.tensor(readImage(self.img_path[idx])).float().to(device),
-        "violent_label" : torch.tensor(self.violent_label[idx]).long().to(device),
-        "real_label" : torch.tensor(self.real_label[idx]).long().to(device),
-        "sentiment_label" : torch.tensor(self.sentiment_label[idx]).long().to(device)
+        "text_embeds" : torch.tensor(getEmbeds(self.text[idx])).float(),
+        "images_x" : torch.tensor(readImage(self.img_path[idx])).float(),
+        "violent_label" : torch.tensor(self.violent_label[idx]).long(),
+        "real_label" : torch.tensor(self.real_label[idx]).long(),
+        "sentiment_label" : torch.tensor(self.sentiment_label[idx]).long()
     }
 
     return sample
