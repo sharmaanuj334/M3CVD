@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from model import *
-from dataPreparation import *
+from tqdm import tqdm
 
 class ConLoss(nn.Module):
 
@@ -42,126 +40,120 @@ class ConLoss(nn.Module):
         cl_loss = self.nt_xent_loss(normed_output, normed_output, targets)
         return cl_loss
     
+def train(attention_model, classifier, train_loader, val_loader, epochs = 15, min_val_loss = 1e5, patience = 3):
 
-epochs = 15
-min_val_loss = 1e5
-patience = 3
+    optimizer1 = torch.optim.Adam(attention_model.parameters(), lr=5e-5)
+    optimizer2 = torch.optim.Adam(classifier.parameters(), lr=5e-5)
 
-attention_model = attention_model()
-classifier = classifier()
+    contrastiveLoss = ConLoss()
+    entropyLoss = torch.nn.CrossEntropyLoss()
 
-optimizer1 = torch.optim.Adam(attention_model.parameters(), lr=5e-5)
-optimizer2 = torch.optim.Adam(classifier.parameters(), lr=5e-5)
+    count = 0
+    for i in range(epochs):
+        attention_model.train()
 
-contrastiveLoss = ConLoss()
-entropyLoss = torch.nn.CrossEntropyLoss()
+        for data in tqdm(train_loader):
+            attention_model.zero_grad()
 
-count = 0
-for i in range(epochs):
-    attention_model.train()
+            text_embeds = data["text_embeds"]
+            images_x = data["images_x"]
+            violent_label = data["violent_label"]
+            real_label = data["real_label"]
+            senti_label = data["sentiment_label"]
 
-    for data in train_loader:
-        attention_model.zero_grad()
+            combined_features = attention_model(images_x, text_embeds)
 
-        text_embeds = data["text_embeds"]
-        images_x = data["images_x"]
-        violent_label = data["violent_label"]
-        real_label = data["real_label"]
-        senti_label = data["sentiment_label"]
+            loss = contrastiveLoss.forward(output=combined_features, targets=real_label) + contrastiveLoss.forward(output=combined_features, targets=violent_label) + contrastiveLoss.forward(output=combined_features, targets=senti_label)
 
-        combined_features = attention_model(images_x, text_embeds)
+            loss.backward()
+            optimizer1.step()
 
-        loss = contrastiveLoss.forward(output=combined_features, targets=real_label) + contrastiveLoss.forward(output=combined_features, targets=violent_label) + contrastiveLoss.forward(output=combined_features, targets=senti_label)
+        attention_model.eval()
+        with torch.no_grad():
+            total_loss_val = 0
+            total_val = 0
 
-        loss.backward()
-        optimizer1.step()
+            for data_val in tqdm(val_loader):
 
-    attention_model.eval()
-    with torch.no_grad():
-        total_loss_val = 0
-        total_val = 0
+                text_embeds_val = data_val["text_embeds"]
+                images_x_val = data_val["images_x"]
+                violent_val_label = data_val["violent_label"]
+                real_val_label = data_val["real_label"]
+                senti_val_label = data_val["sentiment_label"]
 
-        for data_val in val_loader:
+                combined_features_val = attention_model(images_x_val, text_embeds_val)
 
-            text_embeds_val = data_val["text_embeds"]
-            images_x_val = data_val["images_x"]
-            violent_val_label = data_val["violent_label"]
-            real_val_label = data_val["real_label"]
-            senti_val_label = data_val["sentiment_label"]
+                loss_val = contrastiveLoss(output=combined_features_val, targets=real_val_label) + contrastiveLoss(output=combined_features_val, targets=senti_val_label) + contrastiveLoss(output=combined_features_val, targets=senti_val_label)
 
-            combined_features_val = attention_model(images_x_val, text_embeds_val)
+                total_val += text_embeds_val.size(0)
+                total_loss_val += loss_val.item()
+                
+            val_loss = total_loss_val / total_val
 
-            loss_val = contrastiveLoss(output=combined_features_val, targets=real_val_label) + contrastiveLoss(output=combined_features_val, targets=senti_val_label) + contrastiveLoss(output=combined_features_val, targets=senti_val_label)
+            if (min_val_loss > val_loss):
+                min_val_loss = val_loss
+            else:
+                count += 1
+                if count == patience:
+                    break
 
-            total_val += text_embeds_val.size(0)
-            total_loss_val += loss_val.item()
-            
-        val_loss = total_loss_val / total_val
+        print(f"Epoch : {i+1}")
+        print(f"Training Loss: {loss.item()}")
+        print(f"Validation loss : {val_loss}")
 
-        if (min_val_loss > val_loss):
-            min_val_loss = val_loss
-        else:
-            count += 1
-            if count == patience:
-                break
+    count = 0
+    for i in range(epochs):
+        classifier.train()
 
-    print(f"Epoch : {i+1}")
-    print(f"Training Loss: {loss.item()}")
-    print(f"Validation loss : {val_loss}")
+        for data in train_loader:
+            classifier.zero_grad()
 
-count = 0
-for i in range(epochs):
-    classifier.train()
+            text_embeds = data["text_embeds"]
+            images_x = data["images_x"]
+            violent_label = data["violent_label"]
+            real_label = data["real_label"]
+            senti_label = data["sentiment_label"]
 
-    for data in train_loader:
-        classifier.zero_grad()
+            combined_features = attention_model(images_x, text_embeds)
 
-        text_embeds = data["text_embeds"]
-        images_x = data["images_x"]
-        violent_label = data["violent_label"]
-        real_label = data["real_label"]
-        senti_label = data["sentiment_label"]
+            real, violent, senti = classifier(combined_features)
 
-        combined_features = attention_model(images_x, text_embeds)
+            loss = entropyLoss(real, real_label) + entropyLoss(violent, violent_label) + entropyLoss(senti, senti_label)
 
-        real, violent, senti = classifier(combined_features)
+            loss.backward()
+            optimizer2.step()
 
-        loss = entropyLoss(real, real_label) + entropyLoss(violent, violent_label) + entropyLoss(senti, senti_label)
+        classifier.eval()
+        with torch.no_grad():
+            total_loss_val = 0
+            total_val = 0
 
-        loss.backward()
-        optimizer2.step()
+            for data_val in val_loader:
 
-    classifier.eval()
-    with torch.no_grad():
-        total_loss_val = 0
-        total_val = 0
+                text_embeds_val = data_val["text_embeds"]
+                images_x_val = data_val["images_x"]
+                violent_val_label = data_val["violent_label"]
+                real_val_label = data_val["real_label"]
+                senti_val_label = data_val["sentiment_label"]
 
-        for data_val in val_loader:
+                combined_features_val = attention_model(images_x_val, text_embeds_val)
 
-            text_embeds_val = data_val["text_embeds"]
-            images_x_val = data_val["images_x"]
-            violent_val_label = data_val["violent_label"]
-            real_val_label = data_val["real_label"]
-            senti_val_label = data_val["sentiment_label"]
+                real_val, violent_val, senti_val = classifier(combined_features_val)
 
-            combined_features_val = attention_model(images_x_val, text_embeds_val)
+                loss_val = entropyLoss(real_val, real_val_label) + entropyLoss(violent_val, violent_val_label) + entropyLoss(senti_val, senti_val_label)
 
-            real_val, violent_val, senti_val = classifier(combined_features_val)
+                total_val += text_embeds_val.size(0)
+                total_loss_val += loss_val.item()
 
-            loss_val = entropyLoss(real_val, real_val_label) + entropyLoss(violent_val, violent_val_label) + entropyLoss(senti_val, senti_val_label)
+            val_loss = total_loss_val / total_val
 
-            total_val += text_embeds_val.size(0)
-            total_loss_val += loss_val.item()
+            if (min_val_loss > val_loss):
+                min_val_loss = val_loss
+            else:
+                count += 1
+                if count == patience:
+                    break
 
-        val_loss = total_loss_val / total_val
-
-        if (min_val_loss > val_loss):
-            min_val_loss = val_loss
-        else:
-            count += 1
-            if count == patience:
-                break
-
-    print(f"Epoch : {i+1}")
-    print(f"Training Loss: {loss.item()}")
-    print(f"Validation loss : {val_loss}")
+        print(f"Epoch : {i+1}")
+        print(f"Training Loss: {loss.item()}")
+        print(f"Validation loss : {val_loss}")
